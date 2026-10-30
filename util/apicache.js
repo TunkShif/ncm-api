@@ -1,6 +1,25 @@
 var url = require('url')
+var crypto = require('crypto')
 var MemoryCache = require('./memory-cache')
 const logger = require('./logger.js')
+
+// A string that represents the request body. `JSON.stringify` throws on
+// cycles, which a parsed file upload can contain, so cycles are dropped.
+function bodyKey(body) {
+  if (!body || typeof body !== 'object') return ''
+  var seen = new WeakSet()
+  try {
+    return JSON.stringify(body, function (_, value) {
+      if (value && typeof value === 'object') {
+        if (seen.has(value)) return undefined
+        seen.add(value)
+      }
+      return value
+    })
+  } catch (error) {
+    return ''
+  }
+}
 
 var t = {
   ms: 1,
@@ -672,10 +691,24 @@ function ApiCache() {
       req.apicacheTimer = new Date()
 
       // In Express 4.x the url is ambigious based on where a router is mounted.  originalUrl will give the full Url
+      // The key must cover everything that changes the answer, or one caller
+      // gets another caller's cached answer. The cookie can arrive in the
+      // header, the body, or the query string; the body carries the parameters;
+      // the token identifies the caller. `req.body` is already parsed here.
+      var identity =
+        JSON.stringify(req.cookies || {}) +
+        '|' +
+        bodyKey(req.body) +
+        '|' +
+        (req.query && typeof req.query.cookie === 'string'
+          ? req.query.cookie
+          : '') +
+        '|' +
+        (req.get ? req.get('x-api-token') || '' : '')
       var key =
         req.hostname +
         (req.originalUrl || req.url) +
-        JSON.stringify(req.cookies)
+        crypto.createHash('sha256').update(identity).digest('hex')
       // Remove querystring from key if jsonp option is enabled
       if (opt.jsonp) {
         key = url.parse(key).pathname

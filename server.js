@@ -157,6 +157,14 @@ function getCorsAllowOrigin(allowOrigins, requestOrigin) {
   return null
 }
 
+/**
+ * A request URL that is safe to log. The `cookie` query parameter identifies the
+ * account, so it must never reach the log.
+ */
+function redactUrl(url) {
+  return decode(String(url).replace(/([?&]cookie=)[^&]*/gi, '$1***'))
+}
+
 function createConsoleSpinner(message = '启动中') {
   if (!process.stdout.isTTY) {
     return {
@@ -191,6 +199,20 @@ async function constructServer(moduleDefs) {
   const { CORS_ALLOW_ORIGIN } = process.env
   const allowOrigins = parseCorsAllowOrigins(CORS_ALLOW_ORIGIN)
   app.set('trust proxy', true)
+  app.disable('x-powered-by')
+
+  /**
+   * Access control and rate limit.
+   * Both run before the cache middleware, so a rejected request is never cached
+   * and never reaches NetEase.
+   */
+  app.use(
+    require('./util/ratelimit')({
+      windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 60000),
+      limit: Number(process.env.RATE_LIMIT || 300),
+    }),
+  )
+  app.use(require('./middleware/auth'))
 
   /**
    * Serving static files
@@ -212,7 +234,8 @@ async function constructServer(moduleDefs) {
           ? { 'Access-Control-Allow-Origin': corsAllowOrigin }
           : {}),
         ...(shouldSetVaryHeader ? { Vary: 'Origin' } : {}),
-        'Access-Control-Allow-Headers': 'X-Requested-With,Content-Type',
+        'Access-Control-Allow-Headers':
+          'X-Requested-With,Content-Type,X-Api-Token',
         'Access-Control-Allow-Methods': 'PUT,POST,GET,DELETE,OPTIONS',
         'Content-Type': 'application/json; charset=utf-8',
       })
@@ -240,29 +263,32 @@ async function constructServer(moduleDefs) {
   /**
    * Body Parser and File Upload
    */
-  const MAX_UPLOAD_SIZE_MB = 500
-  const MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+  const MAX_BODY_SIZE = process.env.MAX_BODY_SIZE || '8mb'
+  const MAX_UPLOAD_SIZE_MB = Number(process.env.MAX_UPLOAD_SIZE_MB || 8)
 
-  app.use(express.json({ limit: `${MAX_UPLOAD_SIZE_MB}mb` }))
-  app.use(
-    express.urlencoded({ extended: false, limit: `${MAX_UPLOAD_SIZE_MB}mb` }),
-  )
+  app.use(express.json({ limit: MAX_BODY_SIZE }))
+  app.use(express.urlencoded({ extended: false, limit: MAX_BODY_SIZE }))
 
-  app.use(
-    fileUpload({
-      limits: {
-        fileSize: MAX_UPLOAD_SIZE_BYTES,
-      },
-      useTempFiles: true,
-      tempFileDir: require('os').tmpdir(),
-      abortOnLimit: true,
-      parseNested: true,
-    }),
-  )
+  // A music client does not upload files. Off unless asked for.
+  if (process.env.ENABLE_UPLOAD === 'true') {
+    app.use(
+      fileUpload({
+        limits: {
+          fileSize: MAX_UPLOAD_SIZE_MB * 1024 * 1024,
+        },
+        useTempFiles: true,
+        tempFileDir: require('os').tmpdir(),
+        abortOnLimit: true,
+        parseNested: true,
+      }),
+    )
+  }
 
   /**
    * Cache
    */
+  // A cached answer must not carry a `Set-Cookie` of another request.
+  require('./util/apicache').options({ headerBlacklist: ['set-cookie'] })
   app.use(cache('2 minutes', (_, res) => res.statusCode === 200))
 
   /**
@@ -281,7 +307,23 @@ async function constructServer(moduleDefs) {
     moduleDefs ||
     (await getModulesDefinitions(path.join(__dirname, 'module'), special))
 
+  // Routes we do not need, removed from the surface. A prefix only matches a
+  // full path segment, so `/login/cellphone` never blocks `/login/qr/key`.
+  const blockedRoutes = (process.env.BLOCKED_ROUTES || '')
+    .split(',')
+    .map((route) => route.trim())
+    .filter(Boolean)
+  const isBlocked = (route) =>
+    blockedRoutes.some(
+      (prefix) => route === prefix || route.startsWith(`${prefix}/`),
+    )
+  if (blockedRoutes.length > 0) {
+    logger.warn(`Blocked routes: ${blockedRoutes.join(', ')}`)
+  }
+
   for (const moduleDef of moduleDefinitions) {
+    if (isBlocked(moduleDef.route)) continue
+
     // Register the route.
     app.all(moduleDef.route, async (req, res) => {
       ;[req.query, req.body].forEach((item) => {
@@ -305,6 +347,11 @@ async function constructServer(moduleDefs) {
       const query = Object.assign({}, req.query, req.body, req.files, {
         cookie,
       })
+
+      // `?noCookie=false` arrives as the string 'false', which is truthy.
+      const noCookie =
+        ['true', '1', true, 1].includes(query.noCookie) ||
+        process.env.DISABLE_SET_COOKIE === 'true'
 
       try {
         let usedCrypto = ''
@@ -336,7 +383,7 @@ async function constructServer(moduleDefs) {
         })
         const displayCrypto = usedCrypto || (APP_CONF.encrypt ? 'eapi' : 'api')
         logger.info(
-          `Request Success: [${displayCrypto}] ${decode(req.originalUrl)}`,
+          `Request Success: [${displayCrypto}] ${redactUrl(req.originalUrl)}`,
         )
 
         // 夹带私货部分：如果开启了通用解锁，并且是获取歌曲URL的接口，则尝试解锁（如果需要的话）ヾ(≧▽≦*)o
@@ -369,7 +416,7 @@ async function constructServer(moduleDefs) {
         }
 
         const cookies = moduleResponse.cookie
-        if (!query.noCookie) {
+        if (!noCookie) {
           if (Array.isArray(cookies) && cookies.length > 0) {
             if (req.protocol === 'https') {
               // Try to fix CORS SameSite Problem
@@ -391,7 +438,7 @@ async function constructServer(moduleDefs) {
 
         res.status(moduleResponse.status).send(moduleResponse.body)
       } catch (/** @type {*} */ moduleResponse) {
-        logger.error(`${decode(req.originalUrl)}`, {
+        logger.error(`${redactUrl(req.originalUrl)}`, {
           status: moduleResponse.status,
           body: moduleResponse.body,
         })
@@ -405,7 +452,7 @@ async function constructServer(moduleDefs) {
         }
         if (moduleResponse.body.code == '301')
           moduleResponse.body.msg = '需要登录'
-        if (!query.noCookie) {
+        if (!noCookie) {
           res.append('Set-Cookie', moduleResponse.cookie)
         }
 
