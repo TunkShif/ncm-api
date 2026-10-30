@@ -40,8 +40,9 @@ four problems that configuration alone cannot fix:
 Cache keys are hashed so that account cookies are not stored as plain strings in the
 in-memory cache index.
 
-`BLOCKED_ROUTES` matches a full path segment. `/login/cellphone` blocks only that route.
-A bare `/login` would also block `/login/qr/key`, which breaks QR login.
+`BLOCKED_ROUTES` matches by path segment. `/login/cellphone` blocks only that route.
+`=/login` blocks exactly `/login` (email login) and keeps `/login/qr/key`, `/login/status`,
+and `/login/refresh`. A bare `/login` without `=` would unregister the whole QR login flow.
 
 ## Environment
 
@@ -53,7 +54,7 @@ A bare `/login` would also block `/login/qr/key`, which breaks QR login.
 | `MAX_BODY_SIZE` | `8mb` | JSON and form body limit |
 | `MAX_UPLOAD_SIZE_MB` | `8` | per-file limit, only when uploads are on |
 | `ENABLE_UPLOAD` | `false` | mount `express-fileupload` |
-| `BLOCKED_ROUTES` | empty | comma-separated route prefixes to unregister |
+| `BLOCKED_ROUTES` | empty | comma-separated routes to unregister. `/foo` also blocks `/foo/bar`; `=/foo` is exact |
 | `DISABLE_SET_COOKIE` | unset | when `true`, never send `Set-Cookie` |
 
 Suggested production values:
@@ -63,7 +64,7 @@ API_TOKENS=<token-a>,<token-b>
 RATE_LIMIT=300
 MAX_BODY_SIZE=8mb
 ENABLE_UPLOAD=false
-BLOCKED_ROUTES=/captcha,/login/cellphone,/register,/cloud,/audio/match,/avatar
+BLOCKED_ROUTES=/captcha,/login/cellphone,=/login,/register,/cloud,/audio/match,/avatar
 DISABLE_SET_COOKIE=true
 ENABLE_GENERAL_UNBLOCK=false
 ENABLE_PROXY=false

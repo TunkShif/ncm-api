@@ -307,15 +307,18 @@ async function constructServer(moduleDefs) {
     moduleDefs ||
     (await getModulesDefinitions(path.join(__dirname, 'module'), special))
 
-  // Routes we do not need, removed from the surface. A prefix only matches a
-  // full path segment, so `/login/cellphone` never blocks `/login/qr/key`.
+  // Routes we do not need, removed from the surface.
+  // `/foo` blocks `/foo` and `/foo/bar`. `=/foo` blocks only `/foo`, which is how
+  // `/login` (email login) is blocked without blocking `/login/qr/key`.
   const blockedRoutes = (process.env.BLOCKED_ROUTES || '')
     .split(',')
     .map((route) => route.trim())
     .filter(Boolean)
   const isBlocked = (route) =>
-    blockedRoutes.some(
-      (prefix) => route === prefix || route.startsWith(`${prefix}/`),
+    blockedRoutes.some((entry) =>
+      entry.startsWith('=')
+        ? route === entry.slice(1)
+        : route === entry || route.startsWith(`${entry}/`),
     )
   if (blockedRoutes.length > 0) {
     logger.warn(`Blocked routes: ${blockedRoutes.join(', ')}`)
