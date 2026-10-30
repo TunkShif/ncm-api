@@ -1,21 +1,24 @@
-FROM node:lts-alpine
+# syntax=docker/dockerfile:1
 
-RUN apk add --no-cache tini
-
+# Production dependencies only. This stage is thrown away, so the pnpm store
+# (about 45 MB) never reaches the runtime image.
+FROM node:24-alpine AS deps
 ENV NODE_ENV=production
-
-RUN npm install -g pnpm@9
-
-USER node
-
 WORKDIR /app
-
-COPY --chown=node:node . ./
-
-# --prod 模式下 husky 不会被安装，prepare 脚本会因找不到 husky 而失败，
-# 故显式跳过生命周期脚本；本项目生产运行也不依赖任何 postinstall 步骤。
+RUN npm install -g pnpm@9
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile --prod --ignore-scripts
 
+FROM node:24-alpine AS runtime
+RUN apk add --no-cache tini
+ENV NODE_ENV=production
+WORKDIR /app
+
+COPY --from=deps --chown=node:node /app/node_modules ./node_modules
+COPY --chown=node:node . .
+
+USER node
 EXPOSE 3000
 
-CMD [ "/sbin/tini", "--", "node", "app.js" ]
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["node", "app.js"]

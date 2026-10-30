@@ -36,6 +36,8 @@ four problems that configuration alone cannot fix:
 | `server.js` | auth and limiter mounted before the cache; `X-Powered-By` off; `Set-Cookie` blacklisted from cache; body limit 8 MB; uploads behind `ENABLE_UPLOAD`; `cookie` redacted in logs; `BLOCKED_ROUTES`; `noCookie` parsed as a boolean |
 | `util/apicache.js` | cache key covers request cookies, full body, query cookie, and token (hashed with SHA-256) |
 | `.env.prod.example` | new variables documented |
+| `Dockerfile` | two-stage build: dependencies in a throwaway stage, so the pnpm store is not shipped. Runtime image 217 MB instead of 296 MB |
+| `.dockerignore` | add `!/middleware` and `!/pnpm-workspace.yaml`, drop `!/.env` |
 
 Cache keys are hashed so that account cookies are not stored as plain strings in the
 in-memory cache index.
@@ -71,7 +73,18 @@ ENABLE_PROXY=false
 ENABLE_RANDOM_CN_IP=false
 ```
 
-The image runs as user `node` with `WORKDIR /app`. `Dockerfile` is unchanged.
+The image runs as user `node` with `WORKDIR /app`.
+
+`.dockerignore` uses a `/**` allow list, so a new top-level directory is **not** copied
+until it is added. `middleware/` was missing, and the container failed at startup with
+`Cannot find module './middleware/auth'`. If you add a directory, add it here too and check:
+
+```bash
+docker build -t ncm-api:local . && docker run --rm --entrypoint sh ncm-api:local -c 'ls /app'
+```
+
+`!/.env` was removed: a local `.env` would otherwise be baked into the image. Configuration
+comes from the platform environment.
 
 ## Token model
 
