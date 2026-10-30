@@ -73,6 +73,23 @@ ENABLE_RANDOM_CN_IP=false
 
 The image runs as user `node` with `WORKDIR /app`. `Dockerfile` is unchanged.
 
+## Token model
+
+The client bakes one shared token into the APK at build time, and the APK is distributed
+privately. So all devices share one token and one rate-limit bucket. That is accepted at
+this scale; the endpoint and token decision is recorded in `swirl-music`,
+`docs/decisions/0001-ncm-api-hosting-and-credentials.md`.
+
+Rotation needs a rebuild, so never swap a single token in one step:
+
+1. `API_TOKENS=<old>,<new>` and redeploy. Both work; nobody is locked out.
+2. Build and distribute the APK with `<new>`.
+3. When every device runs the new build, set `API_TOKENS=<new>`.
+
+Revoking a person therefore means the same thing as rotating for everyone. Per-user tokens
+would allow individual revocation, but they need a settings screen that the client does not
+have.
+
 ## Client rules that the server cannot enforce
 
 - Send the NetEase cookie as a `Cookie:` header. A cookie in the query string still
