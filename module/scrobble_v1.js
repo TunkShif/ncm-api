@@ -64,9 +64,10 @@ module.exports = async (query, request) => {
     vip: query.vip === 'true' || query.vip === true,
     time: totalTime,
   }
+  // sourcetype=album + sourceid=<album id> records the album in /record/recent/album
   const source = {
     id: sourceId || String(songId),
-    type: 'track',
+    type: query.sourcetype === 'album' ? 'album' : 'track',
     name: sourceName,
   }
 
